@@ -678,5 +678,8 @@ def process_bib_files(input_folder, output_file, option_b_file, log_file_path):
     show_summary_window(stats, output_file, option_b_file, log_file_path)
 
 
-if __name__ == "__main__":
+def main():
     process_bib_files(INPUT_FOLDER, OUTPUT_FILE, OPTION_B_FILE, DUPLICATES_LOG_FILE)
+
+if __name__ == "__main__":
+    main()
