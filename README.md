@@ -27,7 +27,7 @@ you chose to drop.
 ## Install
 
 ```bash
-git clone https://github.com/<your-user>/bib-deduplicator.git
+git clone https://github.com/athyrson06/bib-deduplicator.git
 cd bib-deduplicator
 python -m venv .venv
 source .venv/bin/activate    # Windows: .venv\Scripts\activate
