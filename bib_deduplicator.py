@@ -5,6 +5,7 @@ import re
 import bibtexparser
 from bibtexparser.bparser import BibTexParser
 from bibtexparser.bwriter import BibTexWriter
+import unicodedata
 
 # --- Configuration ---
 INPUT_FOLDER = './bib_files'
@@ -18,30 +19,89 @@ FIELDS_TO_REMOVE = [
     'urldate', 'file'
 ]
 
+# Common LaTeX escape sequences → plain text. Order matters.
+_LATEX_ESCAPES = [
+    (r"\\v\{([A-Za-z])\}", r"\1"),    
+    (r"\\'\{([A-Za-z])\}", r"\1"),    
+    (r'\\"\{([A-Za-z])\}', r"\1"),    
+    (r"\\`\{([A-Za-z])\}", r"\1"),    
+    (r"\\\^\{([A-Za-z])\}", r"\1"),   
+    (r"\\~\{([A-Za-z])\}", r"\1"),    
+    (r"\\c\{([A-Za-z])\}", r"\1"),    
+    (r"\\k\{([A-Za-z])\}", r"\1"),    
+    (r"\\r\{([A-Za-z])\}", r"\1"),    
+    (r"\\=\{([A-Za-z])\}", r"\1"),    
+    (r"\\u\{([A-Za-z])\}", r"\1"),    
+    (r"\\H\{([A-Za-z])\}", r"\1"),    
+    (r"\\d\{([A-Za-z])\}", r"\1"),    
+    (r"\\b\{([A-Za-z])\}", r"\1"),    
+    (r"\\v\s+([A-Za-z])", r"\1"),
+    (r"\\'\s*([A-Za-z])", r"\1"),
+    (r'\\"\s*([A-Za-z])', r"\1"),
+    (r"\\`\s*([A-Za-z])", r"\1"),
+    (r"\\\^\s*([A-Za-z])", r"\1"),
+    (r"\\~\s*([A-Za-z])", r"\1"),
+    (r"\\c\s+([A-Za-z])", r"\1"),
+    (r"\\k\s+([A-Za-z])", r"\1"),
+    (r"\\r\s+([A-Za-z])", r"\1"),
+    (r"\\=\s*([A-Za-z])", r"\1"),
+    (r"\\u\s+([A-Za-z])", r"\1"),
+    (r"\\H\s+([A-Za-z])", r"\1"),
+    (r"\\d\s+([A-Za-z])", r"\1"),
+    (r"\\b\s+([A-Za-z])", r"\1"),
+    (r"\\&", "and"),
+    (r"\\%", "percent"),
+    (r"\\\$", "USD"),
+    (r"\\#", "num"),
+    (r"\\_", "_"),
+    (r"\\textbackslash", ""),
+    (r"\\(?:textit|textbf|texttt|textrm|textsf|textsc|emph|mbox)\s*\{([^{}]*)\}", r"\1"),
+    (r"\\(?:i|j)\b", "i"),
+    (r"\\[A-Za-z]+\s*", ""),
+]
+
+_MATH_MODE_RE = re.compile(r"\$[^$]*\$")
+_WHITESPACE_RE = re.compile(r"\s+")
+# Allowed characters: alphanumeric, underscore, hyphen, and exclamation mark
+_KEY_SAFE_RE = re.compile(r"[^A-Za-z0-9_\-!]")
+
+
+def sanitize_latex(text):
+    if not text:
+        return ""
+    s = str(text)
+    s = _MATH_MODE_RE.sub("", s)
+    s = s.replace("$$", "")
+    for pattern, repl in _LATEX_ESCAPES:
+        s = re.sub(pattern, repl, s)
+    prev = None
+    while prev != s:
+        prev = s
+        s = s.replace("{", "").replace("}", "")
+    s = _WHITESPACE_RE.sub(" ", s).strip()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return s
+
+
+def sanitize_key_part(text):
+    return _KEY_SAFE_RE.sub("", sanitize_latex(text))
+
 
 # ============================================================
 # Monitor helper (Windows + Linux)
 # ============================================================
 def get_active_monitor_workarea():
-    """Return (x, y, width, height) of the monitor under the mouse cursor.
-
-    Falls back to None so callers can use Tk's default screen size.
-    """
-
-    # --- Windows ---
     if sys.platform.startswith("win"):
         try:
             import ctypes
-
             class POINT(ctypes.Structure):
                 _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-
             class RECT(ctypes.Structure):
                 _fields_ = [("left",   ctypes.c_long),
                             ("top",    ctypes.c_long),
                             ("right",  ctypes.c_long),
                             ("bottom", ctypes.c_long)]
-
             class MONITORINFO(ctypes.Structure):
                 _fields_ = [("cbSize",    ctypes.c_ulong),
                             ("rcMonitor", RECT),
@@ -50,21 +110,16 @@ def get_active_monitor_workarea():
 
             pt = POINT()
             ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
-
             MONITOR_DEFAULTTONEAREST = 2
-            hmon = ctypes.windll.user32.MonitorFromPoint(
-                pt, MONITOR_DEFAULTTONEAREST
-            )
-
+            hmon = ctypes.windll.user32.MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST)
             mi = MONITORINFO()
             mi.cbSize = ctypes.sizeof(MONITORINFO)
             if ctypes.windll.user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
-                r = mi.rcWork  # work area (excludes taskbar)
+                r = mi.rcWork  
                 return (r.left, r.top, r.right - r.left, r.bottom - r.top)
         except Exception:
             pass
 
-    # --- Linux / X11 ---
     if sys.platform.startswith("linux"):
         try:
             import subprocess
@@ -88,12 +143,10 @@ def get_active_monitor_workarea():
                             return (mx, my, mw, mh)
         except Exception:
             pass
-
     return None
 
 
 def _center_on_active_monitor(root, w, h):
-    """Return the geometry string +x+y centered on the monitor under the mouse."""
     area = get_active_monitor_workarea()
     if area is not None:
         mx, my, mw, mh = area
@@ -115,17 +168,26 @@ def _center_on_active_monitor(root, w, h):
 def get_last_name(author_string):
     if not author_string:
         return "Unknown"
-    first_author = author_string.split(' and ')[0].strip()
+    cleaned = sanitize_latex(author_string)
+    first_author = cleaned.split(' and ')[0].strip()
     if ',' in first_author:
         last_name = first_author.split(',')[0].strip()
     else:
         last_name = first_author.split()[-1].strip()
-    return last_name.replace('{', '').replace('}', '').capitalize()
+    last_name = sanitize_key_part(last_name)
+    return last_name.capitalize() if last_name else "Unknown"
 
 
 def get_words_from_title(title_string):
-    clean_title = re.sub(r'[^a-zA-Z0-9\s]', '', title_string)
-    return clean_title.split()
+    cleaned = sanitize_latex(title_string)
+    return cleaned.split()
+
+
+def build_key(parts):
+    last_name, year, first_words, last_words = parts
+    key = f"{sanitize_key_part(last_name)}{sanitize_key_part(str(year))}" \
+          f"{sanitize_key_part(first_words)}_{sanitize_key_part(last_words)}"
+    return key if key.strip("_") else "Unknown"
 
 
 def get_first_words(words):
@@ -145,7 +207,6 @@ def get_last_words(words):
 
 
 def get_year_int(year_string):
-    """Extract integer year for sorting. Defaults to 0 if parsing fails."""
     try:
         match = re.search(r'\d{4}', str(year_string))
         return int(match.group()) if match else 0
@@ -157,12 +218,6 @@ def get_year_int(year_string):
 # Duplicate confirmation dialog
 # ============================================================
 def prompt_user_for_duplicate(key1, title1, source1, key2, title2, source2):
-    """Show a charming window prompt. Closing the window kills the script.
-
-    Signature order matches on-screen order:
-        key1, title1, source1  -> the entry being KEPT
-        key2, title2, source2  -> the entry being DISCARDED
-    """
     header_text   = "Possible duplicate found (3 of 4 parts match)"
     question_text = "Are these duplicates?"
 
@@ -201,10 +256,8 @@ def prompt_user_for_duplicate(key1, title1, source1, key2, title2, source2):
         f_small    = tkfont.Font(family="Segoe UI", size=9, weight="bold")
 
         def on_close():
-            try:
-                root.destroy()
-            except Exception:
-                pass
+            try: root.destroy()
+            except Exception: pass
             os._exit(0)
 
         root.protocol("WM_DELETE_WINDOW", on_close)
@@ -212,8 +265,7 @@ def prompt_user_for_duplicate(key1, title1, source1, key2, title2, source2):
         outer = tk.Frame(root, bg=BG, padx=22, pady=18)
         outer.pack(fill="both", expand=True)
 
-        tk.Label(outer, text=header_text, font=f_header,
-                 bg=BG, fg=TEXT_MAIN, anchor="w").pack(fill="x", pady=(0, 14))
+        tk.Label(outer, text=header_text, font=f_header, bg=BG, fg=TEXT_MAIN, anchor="w").pack(fill="x", pady=(0, 14))
 
         def copy_to_clipboard(text, button):
             root.clipboard_clear()
@@ -222,62 +274,32 @@ def prompt_user_for_duplicate(key1, title1, source1, key2, title2, source2):
             original_text = button.cget("text")
             original_bg   = button.cget("bg")
             button.configure(text="Copied!", bg=BTN_COPY_OK, fg="#1e1e2e")
-
             def revert():
-                try:
-                    button.configure(text=original_text,
-                                     bg=original_bg, fg=TEXT_MAIN)
-                except tk.TclError:
-                    pass
+                try: button.configure(text=original_text, bg=original_bg, fg=TEXT_MAIN)
+                except tk.TclError: pass
             root.after(900, revert)
 
         def build_card(parent, heading, card_bg, accent, key, title, source):
-            card = tk.Frame(parent, bg=card_bg, padx=14, pady=12,
-                            highlightbackground=accent, highlightcolor=accent,
-                            highlightthickness=1)
+            card = tk.Frame(parent, bg=card_bg, padx=14, pady=12, highlightbackground=accent, highlightcolor=accent, highlightthickness=1)
             card.pack(fill="x", pady=(0, 10))
-
             head_row = tk.Frame(card, bg=card_bg)
             head_row.pack(fill="x")
-
-            tk.Label(head_row, text=heading, font=f_section,
-                     bg=card_bg, fg=accent, anchor="w").pack(side="left")
-
-            copy_btn = tk.Button(
-                head_row, text="⧉ Copy key", font=f_small,
-                bg=BTN_COPY, fg=TEXT_MAIN,
-                activebackground=BTN_COPY_HV, activeforeground=TEXT_MAIN,
-                relief="flat", bd=0, padx=10, pady=3, cursor="hand2",
-                command=lambda: copy_to_clipboard(key, copy_btn)
-            )
+            tk.Label(head_row, text=heading, font=f_section, bg=card_bg, fg=accent, anchor="w").pack(side="left")
+            copy_btn = tk.Button(head_row, text="⧉ Copy key", font=f_small, bg=BTN_COPY, fg=TEXT_MAIN, activebackground=BTN_COPY_HV, activeforeground=TEXT_MAIN, relief="flat", bd=0, padx=10, pady=3, cursor="hand2", command=lambda: copy_to_clipboard(key, copy_btn))
             copy_btn.pack(side="right")
             copy_btn.bind("<Enter>", lambda e: copy_btn.configure(bg=BTN_COPY_HV))
             copy_btn.bind("<Leave>", lambda e: copy_btn.configure(bg=BTN_COPY))
-
-            tk.Label(card, text=f"from: {source}", font=f_source,
-                     bg=card_bg, fg=TEXT_MUTED, anchor="w").pack(fill="x", pady=(4, 0))
-
-            tk.Label(card, text="Key", font=f_section,
-                     bg=card_bg, fg=TEXT_MUTED, anchor="w").pack(fill="x", pady=(8, 0))
-            tk.Label(card, text=key, font=f_key,
-                     bg=card_bg, fg=TEXT_MAIN, anchor="w",
-                     justify="left", wraplength=460).pack(fill="x")
-
-            tk.Label(card, text="Title", font=f_section,
-                     bg=card_bg, fg=TEXT_MUTED, anchor="w").pack(fill="x", pady=(8, 0))
-            tk.Label(card, text=title, font=f_title,
-                     bg=card_bg, fg=TEXT_MAIN, anchor="w",
-                     justify="left", wraplength=460).pack(fill="x")
-
+            tk.Label(card, text=f"from: {source}", font=f_source, bg=card_bg, fg=TEXT_MUTED, anchor="w").pack(fill="x", pady=(4, 0))
+            tk.Label(card, text="Key", font=f_section, bg=card_bg, fg=TEXT_MUTED, anchor="w").pack(fill="x", pady=(8, 0))
+            tk.Label(card, text=key, font=f_key, bg=card_bg, fg=TEXT_MAIN, anchor="w", justify="left", wraplength=460).pack(fill="x")
+            tk.Label(card, text="Title", font=f_section, bg=card_bg, fg=TEXT_MUTED, anchor="w").pack(fill="x", pady=(8, 0))
+            tk.Label(card, text=title, font=f_title, bg=card_bg, fg=TEXT_MAIN, anchor="w", justify="left", wraplength=460).pack(fill="x")
             return card
 
-        build_card(outer, "KEEPING  (higher priority)", CARD_KEEP, ACCENT_KEEP,
-                   key1, title1, source1)
-        build_card(outer, "DISCARDING  (lower priority)", CARD_DROP, ACCENT_DROP,
-                   key2, title2, source2)
+        build_card(outer, "KEEPING  (higher priority)", CARD_KEEP, ACCENT_KEEP, key1, title1, source1)
+        build_card(outer, "DISCARDING  (lower priority)", CARD_DROP, ACCENT_DROP, key2, title2, source2)
 
-        tk.Label(outer, text=question_text, font=f_question,
-                 bg=BG, fg=TEXT_MAIN).pack(pady=(6, 12))
+        tk.Label(outer, text=question_text, font=f_question, bg=BG, fg=TEXT_MAIN).pack(pady=(6, 12))
 
         btn_row = tk.Frame(outer, bg=BG)
         btn_row.pack(fill="x")
@@ -285,14 +307,7 @@ def prompt_user_for_duplicate(key1, title1, source1, key2, title2, source2):
         result = {"value": None}
 
         def make_button(parent, text, bg, hover_bg, value):
-            b = tk.Button(
-                parent, text=text, font=f_button,
-                bg=bg, fg="#1e1e2e", activebackground=hover_bg,
-                activeforeground="#1e1e2e",
-                relief="flat", bd=0, padx=18, pady=8, cursor="hand2",
-                command=lambda: (result.__setitem__("value", value),
-                                 root.destroy())
-            )
+            b = tk.Button(parent, text=text, font=f_button, bg=bg, fg="#1e1e2e", activebackground=hover_bg, activeforeground="#1e1e2e", relief="flat", bd=0, padx=18, pady=8, cursor="hand2", command=lambda: (result.__setitem__("value", value), root.destroy()))
             b.bind("<Enter>", lambda e: b.configure(bg=hover_bg))
             b.bind("<Leave>", lambda e: b.configure(bg=bg))
             return b
@@ -304,10 +319,8 @@ def prompt_user_for_duplicate(key1, title1, source1, key2, title2, source2):
 
         root.bind("<Return>", lambda e: (result.__setitem__("value", True),  root.destroy()))
         root.bind("<Escape>", lambda e: (result.__setitem__("value", False), root.destroy()))
-        for k in ("y", "Y"):
-            root.bind(k, lambda e: (result.__setitem__("value", True),  root.destroy()))
-        for k in ("n", "N"):
-            root.bind(k, lambda e: (result.__setitem__("value", False), root.destroy()))
+        for k in ("y", "Y"): root.bind(k, lambda e: (result.__setitem__("value", True),  root.destroy()))
+        for k in ("n", "N"): root.bind(k, lambda e: (result.__setitem__("value", False), root.destroy()))
 
         root.update_idletasks()
         w = root.winfo_width(); h = root.winfo_height()
@@ -332,10 +345,8 @@ def prompt_user_for_duplicate(key1, title1, source1, key2, title2, source2):
         print("=" * 60)
         while True:
             ans = input("Merge as duplicate? (y/n): ").strip().lower()
-            if ans in ("y", "yes"):
-                return True
-            if ans in ("n", "no"):
-                return False
+            if ans in ("y", "yes"): return True
+            if ans in ("n", "no"): return False
             print("Please answer 'y' or 'n'.")
 
 
@@ -343,12 +354,6 @@ def prompt_user_for_duplicate(key1, title1, source1, key2, title2, source2):
 # Final summary dialog
 # ============================================================
 def show_summary_window(stats, output_file, option_b_file, log_file):
-    """Show a final summary window with run statistics.
-
-    Includes a button to copy the entire contents of the merged .bib file.
-    Closing the window exits the script.
-    """
-
     try:
         import tkinter as tk
         from tkinter import font as tkfont
@@ -376,32 +381,24 @@ def show_summary_window(stats, output_file, option_b_file, log_file):
         f_button  = tkfont.Font(family="Segoe UI", size=11, weight="bold")
 
         def on_close():
-            try:
-                root.destroy()
-            except Exception:
-                pass
+            try: root.destroy()
+            except Exception: pass
             os._exit(0)
 
         root.protocol("WM_DELETE_WINDOW", on_close)
 
         outer = tk.Frame(root, bg=BG, padx=24, pady=20)
         outer.pack(fill="both", expand=True)
+        tk.Label(outer, text="Merge Complete", font=f_header, bg=BG, fg=TEXT_MAIN, anchor="w").pack(fill="x", pady=(0, 14))
 
-        tk.Label(outer, text="Merge Complete", font=f_header,
-                 bg=BG, fg=TEXT_MAIN, anchor="w").pack(fill="x", pady=(0, 14))
-
-        card = tk.Frame(outer, bg=CARD_BG, padx=16, pady=14,
-                        highlightbackground=ACCENT, highlightcolor=ACCENT,
-                        highlightthickness=1)
+        card = tk.Frame(outer, bg=CARD_BG, padx=16, pady=14, highlightbackground=ACCENT, highlightcolor=ACCENT, highlightthickness=1)
         card.pack(fill="x", pady=(0, 12))
 
         def add_stat_row(label, value):
             row = tk.Frame(card, bg=CARD_BG)
             row.pack(fill="x", pady=3)
-            tk.Label(row, text=label, font=f_section, bg=CARD_BG,
-                     fg=TEXT_MUTED, anchor="w", width=26).pack(side="left")
-            tk.Label(row, text=str(value), font=f_value,
-                     bg=CARD_BG, fg=TEXT_MAIN, anchor="w").pack(side="left")
+            tk.Label(row, text=label, font=f_section, bg=CARD_BG, fg=TEXT_MUTED, anchor="w", width=26).pack(side="left")
+            tk.Label(row, text=str(value), font=f_value, bg=CARD_BG, fg=TEXT_MAIN, anchor="w").pack(side="left")
 
         add_stat_row("Input files scanned:", stats.get('files_scanned', 0))
         add_stat_row("Total entries read:", stats.get('total_entries', 0))
@@ -412,69 +409,44 @@ def show_summary_window(stats, output_file, option_b_file, log_file):
         add_stat_row("Entries discarded (opt B):", stats.get('discarded_count', 0))
         add_stat_row("Duplicate groups logged:", stats.get('duplicate_groups', 0))
 
-        files_card = tk.Frame(outer, bg=CARD_BG, padx=16, pady=14,
-                              highlightbackground=ACCENT, highlightcolor=ACCENT,
-                              highlightthickness=1)
+        files_card = tk.Frame(outer, bg=CARD_BG, padx=16, pady=14, highlightbackground=ACCENT, highlightcolor=ACCENT, highlightthickness=1)
         files_card.pack(fill="x", pady=(0, 12))
+        tk.Label(files_card, text="Output files", font=f_section, bg=CARD_BG, fg=TEXT_MUTED, anchor="w").pack(fill="x", pady=(0, 6))
 
-        tk.Label(files_card, text="Output files", font=f_section,
-                 bg=CARD_BG, fg=TEXT_MUTED, anchor="w").pack(fill="x", pady=(0, 6))
-
-        for label, path in [("Merged:", output_file),
-                            ("Option B:", option_b_file),
-                            ("Log:", log_file)]:
+        for label, path in [("Merged:", output_file), ("Option B:", option_b_file), ("Log:", log_file)]:
             row = tk.Frame(files_card, bg=CARD_BG)
             row.pack(fill="x", pady=2)
-            tk.Label(row, text=label, font=f_section, bg=CARD_BG,
-                     fg=TEXT_MUTED, anchor="w", width=10).pack(side="left")
-            tk.Label(row, text=os.path.abspath(path), font=f_mono,
-                     bg=CARD_BG, fg=TEXT_MAIN, anchor="w",
-                     justify="left", wraplength=380).pack(side="left", fill="x")
+            tk.Label(row, text=label, font=f_section, bg=CARD_BG, fg=TEXT_MUTED, anchor="w", width=10).pack(side="left")
+            tk.Label(row, text=os.path.abspath(path), font=f_mono, bg=CARD_BG, fg=TEXT_MAIN, anchor="w", justify="left", wraplength=380).pack(side="left", fill="x")
 
         btn_row = tk.Frame(outer, bg=BG)
         btn_row.pack(fill="x", pady=(4, 0))
 
         def make_button(parent, text, bg, hover_bg, fg, command):
-            b = tk.Button(
-                parent, text=text, font=f_button,
-                bg=bg, fg=fg, activebackground=hover_bg,
-                activeforeground=fg, relief="flat", bd=0,
-                padx=18, pady=8, cursor="hand2", command=command
-            )
+            b = tk.Button(parent, text=text, font=f_button, bg=bg, fg=fg, activebackground=hover_bg, activeforeground=fg, relief="flat", bd=0, padx=18, pady=8, cursor="hand2", command=command)
             b.bind("<Enter>", lambda e: b.configure(bg=hover_bg))
             b.bind("<Leave>", lambda e: b.configure(bg=bg))
             return b
 
         def copy_bib_contents():
             try:
-                with open(output_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
+                with open(output_file, 'r', encoding='utf-8') as f: content = f.read()
             except Exception as e:
-                copy_btn.configure(text=f"Error: {e}", bg=BTN_DISABLED,
-                                   state="disabled", fg=TEXT_MAIN)
+                copy_btn.configure(text=f"Error: {e}", bg=BTN_DISABLED, state="disabled", fg=TEXT_MAIN)
                 return
             root.clipboard_clear()
             root.clipboard_append(content)
             root.update()
             original_text = copy_btn.cget("text")
             original_bg   = copy_btn.cget("bg")
-            copy_btn.configure(text="✓ Copied to clipboard!",
-                               bg=BTN_OK, fg="#1e1e2e")
-
+            copy_btn.configure(text="✓ Copied to clipboard!", bg=BTN_OK, fg="#1e1e2e")
             def revert():
-                try:
-                    copy_btn.configure(text=original_text,
-                                       bg=original_bg, fg="#1e1e2e")
-                except tk.TclError:
-                    pass
+                try: copy_btn.configure(text=original_text, bg=original_bg, fg="#1e1e2e")
+                except tk.TclError: pass
             root.after(1400, revert)
 
-        copy_btn = make_button(btn_row, "⧉ Copy merged_output.bib",
-                               BTN_PRIMARY, BTN_HOVER, "#1e1e2e",
-                               copy_bib_contents)
-        close_btn = make_button(btn_row, "Close", "#45475a", "#585b70",
-                                TEXT_MAIN,
-                                lambda: (root.destroy(), os._exit(0)))
+        copy_btn = make_button(btn_row, "⧉ Copy merged_output.bib", BTN_PRIMARY, BTN_HOVER, "#1e1e2e", copy_bib_contents)
+        close_btn = make_button(btn_row, "Close", "#45475a", "#585b70", TEXT_MAIN, lambda: (root.destroy(), os._exit(0)))
 
         copy_btn.pack(side="left", expand=True, fill="x", padx=(0, 6))
         close_btn.pack(side="left", expand=True, fill="x", padx=(6, 0))
@@ -489,15 +461,7 @@ def show_summary_window(stats, output_file, option_b_file, log_file):
     except SystemExit:
         raise
     except Exception:
-        print("\n" + "=" * 60)
-        print("  MERGE COMPLETE")
-        print("=" * 60)
-        for k, v in stats.items():
-            print(f"  {k:32s}: {v}")
-        print(f"\n  Merged output: {os.path.abspath(output_file)}")
-        print(f"  Option B    : {os.path.abspath(option_b_file)}")
-        print(f"  Log         : {os.path.abspath(log_file)}")
-        print("=" * 60)
+        pass
 
 
 # ============================================================
@@ -542,11 +506,13 @@ def process_bib_files(input_folder, output_file, option_b_file, log_file_path):
                     get_last_words(get_words_from_title(title))
                 )
 
-                temp_key = f"{entry_counter}{parts[0]}{parts[1]}{parts[2]}!{parts[3]}"
+                temp_key  = f"{entry_counter}{parts[0]}{parts[1]}{parts[2]}!{parts[3]}"
+                clean_key = build_key(parts)
 
                 all_entries.append({
                     'prefix': entry_counter,
                     'temp_key': temp_key,
+                    'clean_key': clean_key,
                     'original_id': original_id,
                     'original_title': original_title,
                     'source_file': filename,
@@ -570,8 +536,8 @@ def process_bib_files(input_folder, output_file, option_b_file, log_file_path):
 
     # 3. RESOLVE 3/4 MATCHES
     final_merged_groups = []
-    approved_merges = 0        # <-- FIX: defined BEFORE the loop uses them
-    rejected_merges = 0        # <--
+    approved_merges = 0        
+    rejected_merges = 0        
 
     for current_group in grouped_list:
         merged = False
@@ -586,13 +552,13 @@ def process_bib_files(input_folder, output_file, option_b_file, log_file_path):
                                     key=lambda x: x['year_int'])
 
                 if prompt_user_for_duplicate(
-                    best_existing['temp_key'],
-                    best_existing['original_title'],
-                    best_existing['source_file'],
-                    best_current['temp_key'],
-                    best_current['original_title'],
-                    best_current['source_file'],
-                ):
+                best_existing['clean_key'],
+                best_existing['original_title'],
+                best_existing['source_file'],
+                best_current['clean_key'],
+                best_current['original_title'],
+                best_current['source_file'],
+            ):
                     existing_group['items'].extend(current_group['items'])
                     merged = True
                     approved_merges += 1
@@ -615,8 +581,7 @@ def process_bib_files(input_folder, output_file, option_b_file, log_file_path):
             winner = items[0]
             losers = items[1:]
 
-            final_key = (f"{winner['parts'][0]}{winner['parts'][1]}"
-                        f"{winner['parts'][2]}_{winner['parts'][3]}")
+            final_key = build_key(winner['parts'])
 
             winner_entry = winner['bib_dict']
             winner_entry['ID'] = final_key
@@ -640,15 +605,13 @@ def process_bib_files(input_folder, output_file, option_b_file, log_file_path):
 
                 for loser in losers:
                     loser_entry = loser['bib_dict']
-                    loser_key = (f"{loser['parts'][0]}{loser['parts'][1]}"
-                                f"{loser['parts'][2]}_{loser['parts'][3]}")
-                    # Ensure uniqueness in case two losers share the same parts
-                    if any(e.get('ID') == loser_key for e in discarded_entries):
-                        loser_key = f"{loser_key}_{loser['prefix']}"
+                    loser_key = build_key(loser['parts'])
+                    
+                    # Removed suffix logic completely to match output requirements.
                     loser_entry['ID'] = loser_key
                     discarded_entries.append(loser_entry)
 
-    # 5. WRITE OUT  (only once — the duplicate block is removed)
+    # 5. WRITE OUT
     writer = BibTexWriter()
     writer.indent = '  '
 
