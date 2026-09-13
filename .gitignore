@@ -26,7 +26,7 @@ ENV/
 htmlcov/
 
 # ============================================================
-# Project outputs — regenerate these by running script.py
+# Project outputs — regenerate these by running bib_deduplicator.py
 # ============================================================
 results/
 merged_output.bib
