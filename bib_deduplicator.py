@@ -511,6 +511,9 @@ def process_bib_files(input_folder, output_file, option_b_file, log_file_path):
     if not bib_files:
         print(f"No .bib files found in '{input_folder}'.")
         return
+    output_dir = os.path.dirname(output_file) or "."
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
 
     parser = BibTexParser(common_strings=True)
     parser.ignore_nonstandard_types = False
